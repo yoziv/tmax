@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { formatKeyForPlatform } from '../utils/platform';
 
 interface ShortcutsHelpProps {
   onClose: () => void;
@@ -10,18 +11,19 @@ const shortcuts = [
     { key: 'Ctrl+Shift+W', action: 'Close terminal' },
     { key: 'Ctrl+Shift+R', action: 'Rename terminal' },
     { key: 'Ctrl+Shift+G', action: 'Jump to terminal by name' },
+    { key: 'Ctrl+Shift+J', action: 'Pane hints (press letter to jump)' },
     { key: 'Ctrl+Shift+P', action: 'Command palette' },
     { key: 'Ctrl+Shift+M', action: 'Open tab menu' },
     { key: 'Ctrl+Shift+D', action: 'Go to directory (favorites & recent)' },
   ]},
   { category: 'Navigation', items: [
     { key: 'Shift+Arrow', action: 'Move focus between panes' },
-    { key: 'Ctrl+Shift+Arrow', action: 'Move/swap terminal in direction' },
+    { key: 'Ctrl+Shift+Xrrow', action: 'Move/swap terminal in direction' },
   ]},
   { category: 'Layout', items: [
     { key: 'Ctrl+Alt+Arrow', action: 'Split in direction' },
     { key: 'Ctrl+Shift+F', action: 'Toggle float / dock' },
-    { key: 'Ctrl+Shift+Alt+Arrow', action: 'Resize pane' },
+    { key: 'Ctrl+Shift+Xlt+Arrow', action: 'Resize pane' },
     { key: 'Ctrl+Shift+E', action: 'Equalize all pane sizes' },
   ]},
   { category: 'Zoom', items: [
@@ -29,7 +31,13 @@ const shortcuts = [
     { key: 'Ctrl+ - / Ctrl+Scroll Down', action: 'Zoom out' },
     { key: 'Ctrl+0', action: 'Reset zoom' },
   ]},
+  { category: 'AI', items: [
+    { key: 'Ctrl+Shift+K', action: 'Jump to prompt in terminal' },
+    { key: 'Ctrl+Shift+C', action: 'AI Sessions panel' },
+  ]},
   { category: 'Other', items: [
+    { key: 'Ctrl+Shift+B', action: 'Hide / show tab bar' },
+    { key: 'Ctrl+Shift+X', action: 'File explorer' },
     { key: 'Ctrl+Shift+?', action: 'Show this help' },
     { key: 'Double-click tab', action: 'Rename terminal' },
     { key: 'Right-click tab', action: 'Context menu' },
@@ -40,10 +48,13 @@ const shortcuts = [
 const ShortcutsHelp: React.FC<ShortcutsHelpProps> = ({ onClose }) => {
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
     };
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
+    document.addEventListener('keydown', handleKey, true);
+    return () => document.removeEventListener('keydown', handleKey, true);
   }, [onClose]);
 
   return (
@@ -59,7 +70,7 @@ const ShortcutsHelp: React.FC<ShortcutsHelpProps> = ({ onClose }) => {
               <div className="shortcuts-category">{group.category}</div>
               {group.items.map((item) => (
                 <div key={item.key} className="shortcuts-row">
-                  <kbd className="shortcuts-key">{item.key}</kbd>
+                  <kbd className="shortcuts-key">{formatKeyForPlatform(item.key)}</kbd>
                   <span className="shortcuts-action">{item.action}</span>
                 </div>
               ))}

@@ -18,9 +18,11 @@ export class CopilotSessionMonitor {
   private sessions = new Map<string, CopilotSession>();
   private callbacks: CopilotMonitorCallbacks = {};
   private readonly basePath: string;
+  private readonly wslDistro?: string;
 
-  constructor() {
-    this.basePath = path.join(os.homedir(), '.copilot', 'session-state');
+  constructor(options?: { basePath?: string; wslDistro?: string }) {
+    this.basePath = options?.basePath ?? path.join(os.homedir(), '.copilot', 'session-state');
+    this.wslDistro = options?.wslDistro;
   }
 
   setCallbacks(callbacks: CopilotMonitorCallbacks): void {
@@ -144,6 +146,12 @@ export class CopilotSessionMonitor {
         session.id.toLowerCase().includes(q)
       ) {
         results.push(this.toSummary(session));
+      } else {
+        // Search through prompts
+        const prompts = this.getPrompts(session.id);
+        if (prompts.some((p) => p.toLowerCase().includes(q))) {
+          results.push(this.toSummary(session));
+        }
       }
     }
 
@@ -185,6 +193,15 @@ export class CopilotSessionMonitor {
     const eventsPath = path.join(sessionDir, 'events.jsonl');
 
     const parsed = fs.existsSync(eventsPath) ? parseSessionEvents(eventsPath) : null;
+
+    // If no summary from workspace.yaml, use first prompt as the display name
+    if (!workspace.summary && workspace.name === id) {
+      const prompts = extractCopilotPrompts(eventsPath, 1);
+      if (prompts.length > 0) {
+        workspace.summary = prompts[0].slice(0, 60);
+        workspace.name = workspace.summary;
+      }
+    }
 
     return {
       id,
@@ -256,7 +273,7 @@ export class CopilotSessionMonitor {
   }
 
   private toSummary(session: CopilotSession): CopilotSessionSummary {
-    return {
+    const summary: CopilotSessionSummary = {
       id: session.id,
       provider: 'copilot',
       status: session.status,
@@ -268,5 +285,12 @@ export class CopilotSessionMonitor {
       toolCallCount: session.toolCallCount,
       lastActivityTime: session.lastActivityTime,
     };
+
+    if (this.wslDistro) {
+      summary.wsl = true;
+      summary.wslDistro = this.wslDistro;
+    }
+
+    return summary;
   }
 }

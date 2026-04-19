@@ -149,7 +149,6 @@ function deriveState(events: EventRecord[]): ParsedSessionEvents {
         status = 'thinking';
         break;
       case 'assistant.message':
-        messageCount++;
         break;
 
       // Tool execution

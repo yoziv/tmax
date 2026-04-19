@@ -53,7 +53,19 @@ export function useDragTerminal(): UseDragTerminalResult {
       } else if (parsed) {
         const { targetId, side } = parsed;
 
-        if (side === 'center') {
+        if (targetId === 'root') {
+          // Root-level drop: wrap entire layout to create full-height/width pane
+          const terminal = store.terminals.get(draggedId);
+          if (terminal?.mode === 'detached') {
+            window.terminalAPI.closeDetached(draggedId);
+            store.reattachTerminal(draggedId);
+          } else if (terminal?.mode === 'tiled') {
+            store.moveToFloat(draggedId);
+          } else if (terminal?.mode === 'dormant') {
+            store.wakeFromDormant(draggedId);
+          }
+          store.insertAtRoot(draggedId, side as 'left' | 'right' | 'top' | 'bottom');
+        } else if (side === 'center') {
           if (targetId !== draggedId) {
             store.swapTerminals(draggedId, targetId);
           }
@@ -94,11 +106,17 @@ export function useDragTerminal(): UseDragTerminalResult {
     store.setDragging(false);
   }, []);
 
+  const handleDragCancel = useCallback(() => {
+    setActiveId(null);
+    useTerminalStore.getState().setDragging(false);
+  }, []);
+
   return {
     activeId,
     handleDragStart,
     handleDragOver,
     handleDragEnd,
+    handleDragCancel,
     sensors,
   };
 }

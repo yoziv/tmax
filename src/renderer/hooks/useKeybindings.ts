@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { useTerminalStore } from '../state/terminal-store';
 import type { SplitDirection } from '../state/types';
+import { isMac } from '../utils/platform';
 
 interface KeyCombo {
   ctrlKey: boolean;
@@ -11,14 +12,15 @@ interface KeyCombo {
 
 function parseKeyCombo(combo: string): KeyCombo {
   // Handle special cases: "Ctrl+=" ends with "+" then "=" which splits oddly
-  // Also "Ctrl+-" and "Ctrl+Shift+/" need care
-  const ctrlKey = /\bctrl\b/i.test(combo);
+  // Also "Ctrl+-" and "Ctrl+Shift+?" need care
+  // Accept Meta/Cmd as aliases for Ctrl (cross-platform config support)
+  const ctrlKey = /\b(ctrl|meta|cmd)\b/i.test(combo);
   const shiftKey = /\bshift\b/i.test(combo);
   const altKey = /\balt\b/i.test(combo);
 
   // Extract the actual key: everything after the last modifier+
   let key = combo;
-  key = key.replace(/\b(ctrl|shift|alt)\s*\+\s*/gi, '');
+  key = key.replace(/\b(ctrl|meta|cmd|shift|alt)\s*\+\s*/gi, '');
   key = key.toLowerCase().trim();
 
   // Normalize common key names
@@ -27,9 +29,27 @@ function parseKeyCombo(combo: string): KeyCombo {
   return { ctrlKey, shiftKey, altKey, key };
 }
 
+// On macOS, Cmd suppresses Shift key transformation in event.key,
+// so Cmd+Shift+/ reports key='/' instead of '?'. Map unshifted → shifted.
+const MAC_SHIFT_MAP: Record<string, string> = {
+  '/': '?', '=': '+', '-': '_', '[': '{', ']': '}', '\\': '|',
+  ';': ':', "'": '"', ',': '<', '.': '>', '`': '~',
+  '1': '!', '2': '@', '3': '#', '4': '$', '5': '%',
+  '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+};
+
 function matchesCombo(event: KeyboardEvent, combo: KeyCombo): boolean {
-  // event.key for arrows is "ArrowRight" etc, normalize both sides
   const eventKey = event.key.toLowerCase();
+  // On macOS, Cmd (metaKey) is the primary app modifier instead of Ctrl
+  if (isMac) {
+    const shiftedKey = combo.shiftKey ? (MAC_SHIFT_MAP[eventKey] ?? eventKey) : eventKey;
+    return (
+      event.metaKey === combo.ctrlKey &&
+      event.shiftKey === combo.shiftKey &&
+      event.altKey === combo.altKey &&
+      (eventKey === combo.key || shiftedKey === combo.key)
+    );
+  }
   return (
     event.ctrlKey === combo.ctrlKey &&
     event.shiftKey === combo.shiftKey &&
@@ -57,8 +77,9 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'Ctrl+Shift+E': 'equalizeLayout',
   'Ctrl+,': 'openSettings',
   'Ctrl+Shift+R': 'renameTerminal',
-  'Ctrl+Shift+/': 'showShortcuts',
-  'Ctrl+Shift+G': 'switchTerminal',
+  'Ctrl+Shift+?': 'showShortcuts',
+  'Ctrl+Shift+G': 'switchTerminalList',
+  'Ctrl+Shift+J': 'switchTerminal',
   'Ctrl+Shift+D': 'dirPicker',
   'Ctrl+Shift+P': 'commandPalette',
   'Ctrl+Tab': 'focusNext',
@@ -73,7 +94,13 @@ const DEFAULT_BINDINGS: Record<string, string> = {
   'Ctrl+Shift+Alt+ArrowRight': 'resizeRight',
   'Ctrl+Shift+M': 'tabMenu',
   'Ctrl+Shift+C': 'copilotPanel',
+  'Ctrl+Shift+T': 'worktreePanel',
+  'Ctrl+Shift+K': 'showPrompts',
+  'Ctrl+Shift+B': 'hideTabBar',
+  'Ctrl+Shift+X': 'fileExplorer',
   'Ctrl+Shift+L': 'cycleGridColumns',
+  'Ctrl+Shift+O': 'colorizeAllTabs',
+  'F5': 'continueAgent',
 };
 
 export function useKeybindings(): void {
@@ -178,6 +205,9 @@ function dispatchAction(action: string): void {
       }
       break;
     case 'switchTerminal':
+      store.togglePaneHints();
+      break;
+    case 'switchTerminalList':
       store.toggleSwitcher();
       break;
     case 'renameTerminal':
@@ -226,8 +256,23 @@ function dispatchAction(action: string): void {
     case 'copilotPanel':
       store.toggleCopilotPanel();
       break;
+    case 'worktreePanel':
+      store.toggleWorktreePanel();
+      break;
+    case 'showPrompts':
+      if (focusedId) store.showPromptsForTerminal(focusedId);
+      break;
+    case 'hideTabBar':
+      store.toggleHideTabTitles();
+      break;
+    case 'fileExplorer':
+      store.toggleFileExplorer();
+      break;
     case 'cycleGridColumns':
       store.cycleGridColumns();
+      break;
+    case 'colorizeAllTabs':
+      store.colorizeAllTabs();
       break;
     case 'moveUp':
     case 'moveDown':
@@ -236,6 +281,14 @@ function dispatchAction(action: string): void {
       if (!focusedId) break;
       const moveDir = action.replace('move', '').toLowerCase() as 'up' | 'down' | 'left' | 'right';
       store.moveTerminalDirection(focusedId, moveDir);
+      break;
+    }
+    case 'continueAgent': {
+      if (!focusedId) break;
+      const terminal = store.terminals.get(focusedId);
+      if (terminal?.aiSessionId) {
+        window.terminalAPI.writePty(focusedId, 'continue\r');
+      }
       break;
     }
     case 'resizeUp':

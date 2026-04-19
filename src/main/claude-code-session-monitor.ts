@@ -24,9 +24,11 @@ export class ClaudeCodeSessionMonitor {
   private filePaths = new Map<string, string>();
   private callbacks: ClaudeCodeMonitorCallbacks = {};
   private readonly basePath: string;
+  private readonly wslDistro?: string;
 
-  constructor() {
-    this.basePath = path.join(os.homedir(), '.claude', 'projects');
+  constructor(options?: { basePath?: string; wslDistro?: string }) {
+    this.basePath = options?.basePath ?? path.join(os.homedir(), '.claude', 'projects');
+    this.wslDistro = options?.wslDistro;
   }
 
   setCallbacks(callbacks: ClaudeCodeMonitorCallbacks): void {
@@ -164,6 +166,12 @@ export class ClaudeCodeSessionMonitor {
         summary.id.toLowerCase().includes(q)
       ) {
         results.push(summary);
+      } else {
+        // Search through prompts
+        const prompts = this.getPrompts(summary.id);
+        if (prompts.some((p) => p.toLowerCase().includes(q))) {
+          results.push(summary);
+        }
       }
     }
 
@@ -221,7 +229,7 @@ export class ClaudeCodeSessionMonitor {
       cwdFolder = parts[parts.length - 1] || parsed.cwd;
     }
 
-    return {
+    const summary: CopilotSessionSummary = {
       id: parsed.sessionId,
       provider: 'claude-code',
       status: parsed.status,
@@ -234,5 +242,12 @@ export class ClaudeCodeSessionMonitor {
       lastActivityTime: parsed.lastActivityTime,
       model: parsed.model || undefined,
     };
+
+    if (this.wslDistro) {
+      summary.wsl = true;
+      summary.wslDistro = this.wslDistro;
+    }
+
+    return summary;
   }
 }

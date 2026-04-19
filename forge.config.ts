@@ -11,18 +11,43 @@ const config: ForgeConfig = {
   outDir: process.env.FORGE_OUT_DIR || 'out',
   hooks: {
     postPackage: async (_config, options) => {
-      // Copy node-pty native module into packaged app
       const path = require('path');
       const fs = require('fs-extra');
-      const appDir = path.join(options.outputPaths[0], 'resources', 'app');
+      const outDir = options.outputPaths[0];
+
+      // On macOS, outputPaths[0] is the directory containing the .app bundle
+      // (e.g. out/tmax-darwin-arm64), not the .app itself.
+      const macApp = fs.readdirSync(outDir).find((f: string) => f.endsWith('.app'));
+      const appDir = macApp
+        ? path.join(outDir, macApp, 'Contents', 'Resources', 'app')
+        : path.join(outDir, 'resources', 'app');
+
       const src = path.join(__dirname, 'node_modules', 'node-pty');
       const dest = path.join(appDir, 'node_modules', 'node-pty');
       await fs.copy(src, dest);
-      // Also copy node-addon-api (node-pty dependency)
+
+      // Ensure all binaries are executable (NTFS doesn't preserve Unix perms)
+      const prebuildsDir = path.join(dest, 'prebuilds');
+      if (fs.existsSync(prebuildsDir)) {
+        for (const platform of fs.readdirSync(prebuildsDir)) {
+          const platformDir = path.join(prebuildsDir, platform);
+          for (const file of fs.readdirSync(platformDir)) {
+            fs.chmodSync(path.join(platformDir, file), 0o755);
+          }
+        }
+      }
+
       const napiSrc = path.join(__dirname, 'node_modules', 'node-addon-api');
       const napiDest = path.join(appDir, 'node_modules', 'node-addon-api');
       if (fs.existsSync(napiSrc)) await fs.copy(napiSrc, napiDest);
-      console.log('Copied node-pty to packaged app');
+
+      // chokidar is marked as external in vite.main.config.ts (native ESM),
+      // so it must be present in node_modules at runtime
+      const chokidarSrc = path.join(__dirname, 'node_modules', 'chokidar');
+      const chokidarDest = path.join(appDir, 'node_modules', 'chokidar');
+      if (fs.existsSync(chokidarSrc)) await fs.copy(chokidarSrc, chokidarDest);
+
+      console.log(`Copied native/external modules to ${appDir}`);
     },
   },
   packagerConfig: {

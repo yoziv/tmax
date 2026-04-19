@@ -1,5 +1,16 @@
 import { contextBridge, ipcRenderer, clipboard } from 'electron';
 import { IPC } from '../shared/ipc-channels';
+import type { DiffMode, DiffResult, AnnotatedFile } from '../shared/diff-types';
+import type { RepoWorktrees } from '../shared/worktree-types';
+
+export interface PtyDiag {
+  pid: number;
+  writeCount: number;
+  lastWriteTime: number;
+  dataCount: number;
+  lastDataTime: number;
+  dataBytes: number;
+}
 
 export interface TerminalAPI {
   createPty(opts: {
@@ -10,6 +21,7 @@ export interface TerminalAPI {
     env?: Record<string, string>;
     cols: number;
     rows: number;
+    wslDistro?: string;
   }): Promise<{ id: string; pid: number }>;
   writePty(id: string, data: string): void;
   resizePty(id: string, cols: number, rows: number): Promise<void>;
@@ -19,13 +31,34 @@ export interface TerminalAPI {
   getConfig(): Promise<Record<string, unknown>>;
   setConfig(key: string, value: unknown): Promise<void>;
   clipboardRead(): string;
+  clipboardReadHTML(): string;
   clipboardWrite(text: string): void;
   clipboardHasImage(): boolean;
   clipboardSaveImage(): Promise<string>;
   getAppVersion(): Promise<string>;
-  getVersionUpdate(): Promise<{ current: string; latest: string; url: string } | null>;
-  checkForUpdates(): Promise<{ current: string; latest: string; url: string } | null>;
-  onNewVersionAvailable(cb: (info: { current: string; latest: string; url: string }) => void): () => void;
+  getVersionUpdate(): Promise<{ status: string; current: string; latest?: string; url?: string; error?: string; releaseNotes?: string } | null>;
+  checkForUpdates(): void;
+  restartAndUpdate(): void;
+  onUpdateStatusChanged(cb: (info: { status: string; current: string; latest?: string; url?: string; error?: string; releaseNotes?: string }) => void): () => void;
+  getPtyDiag(id: string): Promise<PtyDiag | null>;
+  diagLog(event: string, data?: Record<string, unknown>): void;
+  getDiagLogPath(): Promise<string>;
+  getSystemFonts(): Promise<string[]>;
+  // ── Transparency ──────────────────────────────────────────────────
+  setBackgroundMaterial(material: string): Promise<void>;
+  getPlatformSupportsMaterial(): Promise<boolean>;
+  // ── Diff editor ──────────────────────────────────────────────────
+  diffResolveGitRoot(cwd: string): Promise<string>;
+  diffGetDiff(cwd: string, mode: DiffMode): Promise<DiffResult>;
+  diffGetAnnotatedFile(cwd: string, filePath: string, mode: DiffMode): Promise<AnnotatedFile>;
+  // ── File explorer ────────────────────────────────────────────────
+  fileList(dirPath: string, wslDistro?: string): Promise<{ name: string; isDirectory: boolean; path: string }[]>;
+  fileRead(filePath: string, wslDistro?: string): Promise<string | null>;
+  // ── Git worktree ──────────────────────────────────────────────────
+  listWorktrees(cwd: string): Promise<RepoWorktrees>;
+  createWorktree(repoPath: string, branchName: string, baseBranch: string): Promise<{ success: boolean; worktreePath?: string; error?: string }>;
+  deleteWorktree(repoPath: string, worktreePath: string): Promise<{ success: boolean; error?: string }>;
+  getBranches(repoPath: string): Promise<string[]>;
 }
 
 const terminalAPI: TerminalAPI = {
@@ -75,6 +108,10 @@ const terminalAPI: TerminalAPI = {
 
   clipboardRead() {
     return clipboard.readText();
+  },
+
+  clipboardReadHTML() {
+    return clipboard.readHTML();
   },
 
   clipboardWrite(text: string) {
@@ -249,19 +286,88 @@ const terminalAPI: TerminalAPI = {
   },
 
   checkForUpdates() {
-    return ipcRenderer.invoke(IPC.VERSION_CHECK_NOW);
+    ipcRenderer.send(IPC.VERSION_CHECK_NOW);
   },
 
-  onNewVersionAvailable(cb: (info: { current: string; latest: string; url: string }) => void): () => void {
-    const listener = (_event: Electron.IpcRendererEvent, info: { current: string; latest: string; url: string }) => {
+  restartAndUpdate() {
+    ipcRenderer.send(IPC.VERSION_RESTART_AND_UPDATE);
+  },
+
+  getPtyDiag(id: string) {
+    return ipcRenderer.invoke(IPC.PTY_GET_DIAG, id);
+  },
+
+  diagLog(event: string, data?: Record<string, unknown>) {
+    ipcRenderer.send(IPC.DIAG_LOG, event, data);
+  },
+
+  getDiagLogPath() {
+    return ipcRenderer.invoke(IPC.DIAG_GET_LOG_PATH);
+  },
+
+  getSystemFonts() {
+    return ipcRenderer.invoke(IPC.GET_SYSTEM_FONTS);
+  },
+
+  onUpdateStatusChanged(cb: (info: { status: string; current: string; latest?: string; url?: string; error?: string }) => void): () => void {
+    const listener = (_event: Electron.IpcRendererEvent, info: { status: string; current: string; latest?: string; url?: string; error?: string }) => {
       cb(info);
     };
-    ipcRenderer.on(IPC.VERSION_NEW_AVAILABLE, listener);
+    ipcRenderer.on(IPC.VERSION_UPDATE_STATUS, listener);
     return () => {
-      ipcRenderer.removeListener(IPC.VERSION_NEW_AVAILABLE, listener);
+      ipcRenderer.removeListener(IPC.VERSION_UPDATE_STATUS, listener);
     };
+  },
+
+  // ── Transparency ────────────────────────────────────────────────
+  setBackgroundMaterial(material: string) {
+    return ipcRenderer.invoke(IPC.SET_BACKGROUND_MATERIAL, material);
+  },
+
+  getPlatformSupportsMaterial(): Promise<boolean> {
+    return ipcRenderer.invoke(IPC.GET_PLATFORM_SUPPORTS_MATERIAL);
+  },
+
+  // ── Diff editor ──────────────────────────────────────────────────
+  diffResolveGitRoot(cwd: string) {
+    return ipcRenderer.invoke(IPC.DIFF_RESOLVE_GIT_ROOT, cwd);
+  },
+
+  diffGetDiff(cwd: string, mode: DiffMode) {
+    return ipcRenderer.invoke(IPC.DIFF_GET_DIFF, cwd, mode);
+  },
+
+  diffGetAnnotatedFile(cwd: string, filePath: string, mode: DiffMode) {
+    return ipcRenderer.invoke(IPC.DIFF_GET_ANNOTATED_FILE, cwd, filePath, mode);
+  },
+
+  // ── File explorer ──────────────────────────────────────────────
+  fileList(dirPath: string, wslDistro?: string) {
+    return ipcRenderer.invoke(IPC.FILE_LIST, dirPath, wslDistro);
+  },
+
+  fileRead(filePath: string, wslDistro?: string) {
+    return ipcRenderer.invoke(IPC.FILE_READ, filePath, wslDistro);
+  },
+
+  // ── Git worktree ──────────────────────────────────────────────────
+  listWorktrees(cwd: string) {
+    return ipcRenderer.invoke(IPC.GIT_LIST_WORKTREES, cwd);
+  },
+  createWorktree(repoPath: string, branchName: string, baseBranch: string) {
+    return ipcRenderer.invoke(IPC.GIT_CREATE_WORKTREE, repoPath, branchName, baseBranch);
+  },
+  deleteWorktree(repoPath: string, worktreePath: string) {
+    return ipcRenderer.invoke(IPC.GIT_DELETE_WORKTREE, repoPath, worktreePath);
+  },
+  getBranches(repoPath: string) {
+    return ipcRenderer.invoke(IPC.GIT_GET_BRANCHES, repoPath);
   },
 
 };
 
 contextBridge.exposeInMainWorld('terminalAPI', terminalAPI);
+contextBridge.exposeInMainWorld('platformInfo', {
+  platform: process.platform,
+  homeDir: require('os').homedir(),
+});

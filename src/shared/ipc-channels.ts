@@ -33,11 +33,32 @@ export const IPC = {
   CLAUDE_CODE_START_WATCHING: 'claude-code:startWatching',
   CLAUDE_CODE_STOP_WATCHING: 'claude-code:stopWatching',
   CLAUDE_CODE_GET_PROMPTS: 'claude-code:getPrompts',
-  VERSION_NEW_AVAILABLE: 'version:newAvailable',
+  VERSION_UPDATE_STATUS: 'version:updateStatus',
   VERSION_GET_UPDATE: 'version:getUpdate',
   VERSION_CHECK_NOW: 'version:checkNow',
   VERSION_GET_APP_VERSION: 'version:getAppVersion',
+  VERSION_RESTART_AND_UPDATE: 'version:restartAndUpdate',
   CLIPBOARD_SAVE_IMAGE: 'clipboard:saveImage',
+  PTY_GET_DIAG: 'pty:getDiag',
+  DIAG_LOG: 'diag:log',
+  DIAG_GET_LOG_PATH: 'diag:getLogPath',
+  GET_SYSTEM_FONTS: 'system:getFonts',
+  // ── Transparency ────────────────────────────────────────────────────
+  SET_BACKGROUND_MATERIAL: 'transparency:setMaterial',
+  GET_PLATFORM_SUPPORTS_MATERIAL: 'transparency:platformSupports',
+  // ── Diff editor ────────────────────────────────────────────────────
+  DIFF_RESOLVE_GIT_ROOT: 'diff:resolveGitRoot',
+  DIFF_GET_CODE_CHANGES: 'diff:getCodeChanges',
+  DIFF_GET_DIFF: 'diff:getDiff',
+  DIFF_GET_ANNOTATED_FILE: 'diff:getAnnotatedFile',
+  // ── File explorer ──────────────────────────────────────────────────
+  FILE_LIST: 'file:list',
+  FILE_READ: 'file:read',
+  // ── Git worktree ────────────────────────────────────────────────────
+  GIT_LIST_WORKTREES: 'git:listWorktrees',
+  GIT_CREATE_WORKTREE: 'git:createWorktree',
+  GIT_DELETE_WORKTREE: 'git:deleteWorktree',
+  GIT_GET_BRANCHES: 'git:getBranches',
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];

@@ -13,12 +13,18 @@ import TilingLayout from './components/TilingLayout';
 import FloatingLayer from './components/FloatingLayer';
 import DropZoneOverlay from './components/DropZoneOverlay';
 import TerminalSwitcher from './components/TerminalSwitcher';
+import PaneHintOverlay from './components/PaneHintOverlay';
 import StatusBar from './components/StatusBar';
 import ShortcutsHelp from './components/ShortcutsHelp';
 import Settings from './components/Settings';
 import CommandPalette from './components/CommandPalette';
 import DirPanel from './components/DirPanel';
 import CopilotPanel from './components/CopilotPanel';
+import WorktreePanel from './components/WorktreePanel';
+import DiffReview from './components/DiffReview';
+import FileExplorer from './components/FileExplorer';
+import FloatingRenameInput from './components/FloatingRenameInput';
+import Toast from './components/Toast';
 
 const App: React.FC = () => {
   const loadConfig = useTerminalStore((s) => s.loadConfig);
@@ -28,6 +34,7 @@ const App: React.FC = () => {
   const showShortcuts = useTerminalStore((s) => s.showShortcuts);
   const showCommandPalette = useTerminalStore((s) => s.showCommandPalette);
   const tabBarPosition = useTerminalStore((s) => s.tabBarPosition);
+  const hideTabBar = useTerminalStore((s) => s.hideTabTitles);
 
   useKeybindings();
 
@@ -36,6 +43,7 @@ const App: React.FC = () => {
     handleDragStart,
     handleDragOver,
     handleDragEnd,
+    handleDragCancel,
     sensors,
   } = useDragTerminal();
 
@@ -45,7 +53,13 @@ const App: React.FC = () => {
       try {
         await loadConfig();
         await useTerminalStore.getState().loadDirs();
+        // Load AI session lists before restore so getStartupCommand() can
+        // determine the correct agent (copilot vs claude) for each terminal.
+        await useTerminalStore.getState().loadCopilotSessions();
+        await useTerminalStore.getState().loadClaudeCodeSessions();
         if (cancelled) return;
+        // Restore FIRST so checkStaleActiveSessions sees persisted overrides
+        // and its update gets merged on top rather than being overwritten.
         if (useTerminalStore.getState().terminals.size === 0) {
           const restored = await useTerminalStore.getState().restoreSession();
           if (cancelled) return;
@@ -53,15 +67,17 @@ const App: React.FC = () => {
             await createTerminal();
           }
         }
+        // Check for stale active sessions (>30 days) after hydration
+        useTerminalStore.getState().checkStaleActiveSessions();
       } catch (err) {
         console.error('Init failed:', err);
       }
     }
     init();
 
-    // Prevent Chromium CSS zoom on Ctrl+wheel anywhere outside terminals
+    // Prevent Chromium CSS zoom on Ctrl+wheel (Cmd+wheel on Mac) anywhere outside terminals
     const handleGlobalWheel = (e: WheelEvent) => {
-      if (e.ctrlKey) e.preventDefault();
+      if (e.ctrlKey || e.metaKey) e.preventDefault();
     };
     document.addEventListener('wheel', handleGlobalWheel, { passive: false });
 
@@ -78,16 +94,35 @@ const App: React.FC = () => {
       }
     }, 5000);
 
+    // Renderer heartbeat — logs every 30s so we can detect renderer freezes
+    // vs machine sleep in diagnostic logs.
+    let heartbeatSeq = 0;
+    const heartbeatInterval = setInterval(() => {
+      const s = useTerminalStore.getState();
+      window.terminalAPI.diagLog('renderer:heartbeat', {
+        seq: ++heartbeatSeq,
+        terminals: s.terminals.size,
+        focused: s.focusedTerminalId ?? 'none',
+      });
+    }, 30000);
+
     // Listen for detached windows being closed
     const unsubDetached = window.terminalAPI.onDetachedClosed?.((id: string) => {
       useTerminalStore.getState().reattachTerminal(id);
     });
+
+    // Periodic stale session check (every 6 hours)
+    const staleCheckInterval = setInterval(() => {
+      useTerminalStore.getState().checkStaleActiveSessions();
+    }, 6 * 60 * 60 * 1000);
 
     return () => {
       cancelled = true;
       document.removeEventListener('wheel', handleGlobalWheel);
       window.removeEventListener('beforeunload', handleBeforeUnload);
       clearInterval(autoSaveInterval);
+      clearInterval(heartbeatInterval);
+      clearInterval(staleCheckInterval);
       unsubDetached?.();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -99,8 +134,25 @@ const App: React.FC = () => {
     api.startClaudeCodeWatching?.();
 
     const store = useTerminalStore.getState;
+
+    // In-app toast on status transition to needs-attention.
+    // Edge-triggered: only fires when transitioning INTO awaitingApproval /
+    // waitingForUser, not on every update. Works for both Copilot and Claude.
+    const prevStatus = new Map<string, string>();
+    const maybeNotify = (session: CopilotSessionSummary, provider: string) => {
+      const prev = prevStatus.get(session.id);
+      prevStatus.set(session.id, session.status);
+      const attention = session.status === 'awaitingApproval' || session.status === 'waitingForUser';
+      const wasAttention = prev === 'awaitingApproval' || prev === 'waitingForUser';
+      if (!attention || wasAttention) return;
+      const label = session.status === 'awaitingApproval' ? 'needs approval' : 'waiting for input';
+      const title = session.summary || session.repository || session.id.slice(0, 8);
+      store().addToast(`${provider}: ${title} - ${label}`);
+    };
+
     const unsubCopilotUpdated = api.onCopilotSessionUpdated?.((session: CopilotSessionSummary) => {
       store().updateCopilotSession(session);
+      maybeNotify(session, 'Copilot');
     });
     const unsubCopilotAdded = api.onCopilotSessionAdded?.((session: CopilotSessionSummary) => {
       store().addCopilotSession(session);
@@ -110,6 +162,7 @@ const App: React.FC = () => {
     });
     const unsubClaudeUpdated = api.onClaudeCodeSessionUpdated?.((session: CopilotSessionSummary) => {
       store().updateClaudeCodeSession(session);
+      maybeNotify(session, 'Claude');
     });
     const unsubClaudeAdded = api.onClaudeCodeSessionAdded?.((session: CopilotSessionSummary) => {
       store().addClaudeCodeSession(session);
@@ -141,32 +194,44 @@ const App: React.FC = () => {
       onDragStart={handleDragStart}
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
+      onDragCancel={handleDragCancel}
     >
-      <div className={`app-shell ${tabBarPosition === 'left' ? 'tab-bar-left' : ''}`}>
-        <TabBar vertical={tabBarPosition === 'left'} />
-        <div className="main-area">
-          <DirPanel />
-          <CopilotPanel />
-          <div className="layout-area">
-            <TilingLayout />
-            <FloatingLayer />
-          <DragOverlay>
-            {activeId && draggedTerminal ? (
-              <div className="drag-overlay-tab">
-                {draggedTerminal.title}
-              </div>
-            ) : null}
-          </DragOverlay>
-            <DropZoneOverlay />
+      <div className={`app-shell tab-bar-${tabBarPosition}`}>
+        {!hideTabBar && tabBarPosition === 'top' && <TabBar />}
+        <div className="content-row">
+          {!hideTabBar && tabBarPosition === 'left' && <TabBar vertical />}
+          <div className="main-area">
+            <DirPanel />
+            <CopilotPanel />
+            <WorktreePanel />
+            <FileExplorer />
+            <div className="layout-area">
+              <TilingLayout />
+              <FloatingLayer />
+            <DragOverlay>
+              {activeId && draggedTerminal ? (
+                <div className="drag-overlay-tab">
+                  {draggedTerminal.title}
+                </div>
+              ) : null}
+            </DragOverlay>
+              <DropZoneOverlay />
+            </div>
           </div>
+          {!hideTabBar && tabBarPosition === 'right' && <TabBar vertical side="right" />}
         </div>
+        {!hideTabBar && tabBarPosition === 'bottom' && <TabBar />}
         <StatusBar />
         <TerminalSwitcher />
+        <PaneHintOverlay />
         <CommandPalette />
         <Settings />
         {showShortcuts && (
           <ShortcutsHelp onClose={() => useTerminalStore.getState().toggleShortcuts()} />
         )}
+        <DiffReview />
+        <FloatingRenameInput />
+        <Toast />
       </div>
     </DndContext>
   );

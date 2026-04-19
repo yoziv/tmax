@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>tmax Download Stats</title>
+<style>
+  :root { --bg: #1e1e2e; --surface: #313244; --border: #45475a; --text: #cdd6f4; --dim: #a6adc8; --accent: #89b4fa; --green: #a6e3a1; --yellow: #f9e2af; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); padding: 24px; max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 24px; margin-bottom: 4px; }
+  .subtitle { color: var(--dim); margin-bottom: 24px; font-size: 14px; }
+  .subtitle a { color: var(--accent); text-decoration: none; }
+  .summary { display: flex; gap: 16px; margin-bottom: 24px; }
+  .stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px 20px; flex: 1; }
+  .stat-card .label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; color: var(--accent); margin-top: 4px; }
+  .stat-card .value.green { color: var(--green); }
+  .release { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
+  .release-header { padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .release-header:hover { background: rgba(137,180,250,0.05); }
+  .release-tag { font-weight: 600; font-size: 16px; }
+  .release-tag .latest { background: var(--green); color: var(--bg); font-size: 11px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: 600; }
+  .release-date { color: var(--dim); font-size: 13px; }
+  .release-total { color: var(--yellow); font-weight: 600; }
+  .release-body { padding: 0; }
+  .release-body.hidden { display: none; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 8px 16px; font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); }
+  th:last-child { text-align: right; }
+  td { padding: 6px 16px; font-size: 14px; border-bottom: 1px solid rgba(69,71,90,0.4); }
+  td:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+  tr:last-child td { border-bottom: none; }
+  .zero { color: #585b70; }
+  .loading { text-align: center; padding: 48px; color: var(--dim); }
+  .platform-icon { margin-right: 6px; }
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; }
+  .filter-btn { background: var(--surface); border: 1px solid var(--border); color: var(--dim); padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .filter-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .chart-section { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+  .chart-title { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+  .chart-container { position: relative; width: 100%; height: 280px; }
+  .chart-container canvas { width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+
+<h1>tmax Download Stats</h1>
+<div class="subtitle"><a href="https://github.com/InbarR/tmax">github.com/InbarR/tmax</a></div>
+
+<div class="summary">
+  <div class="stat-card"><div class="label">Total Users (installs)</div><div class="value green" id="total">-</div></div>
+  <div class="stat-card"><div class="label">Auto-Updates</div><div class="value" id="updates">-</div></div>
+  <div class="stat-card"><div class="label">Releases</div><div class="value" id="releases">-</div></div>
+</div>
+
+<div class="chart-section">
+  <div class="chart-title">New installs by version (stacked by OS)</div>
+  <div class="chart-container"><canvas id="chart"></canvas></div>
+</div>
+
+<div class="chart-section">
+  <div class="chart-title">Downloads over time</div>
+  <div style="display:flex;gap:6px;margin-bottom:6px;">
+    <button class="filter-btn active" id="timelineMode-cumulative">Cumulative</button>
+    <button class="filter-btn" id="timelineMode-delta">New per interval</button>
+  </div>
+  <div style="display:flex;gap:6px;margin-bottom:10px;align-items:center;">
+    <span style="color:var(--dim);font-size:12px;">Stack by:</span>
+    <button class="filter-btn active" id="timelineStack-release">Release</button>
+    <button class="filter-btn" id="timelineStack-platform">Platform</button>
+  </div>
+  <div class="chart-container"><canvas id="timelineChart"></canvas></div>
+  <div style="color:var(--dim);font-size:12px;margin-top:8px;" id="timelineNote">Loading...</div>
+</div>
+
+<div class="filter-bar">
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="windows">Windows</button>
+  <button class="filter-btn" data-filter="macos">macOS</button>
+  <button class="filter-btn" data-filter="linux">Linux</button>
+</div>
+
+<div id="content"><div class="loading">Loading...</div></div>
+
+<script>
+const REPO = 'InbarR/tmax';
+// Assets to exclude from download counts
+// Matches RELEASES, RELEASES-x64, RELEASES-arm64 - Squirrel metadata files
+// fetched on every auto-update attempt. Not real installs.
+const IS_META = (name) => name.startsWith('RELEASES');
+// Auto-update assets (not new users)
+const IS_UPDATE = (name) => /\.nupkg$/.test(name);
+
+function platformOf(name) {
+  if (/win32|\.exe$|\.nupkg$|RELEASES/i.test(name)) return 'windows';
+  if (/darwin|\.dmg$/i.test(name)) return 'macos';
+  if (/linux|\.deb$|\.rpm$/i.test(name)) return 'linux';
+  return 'other';
+}
+
+function platformIcon(p) {
+  if (p === 'windows') return '\u{1FA9F}';
+  if (p === 'macos') return '\uD83C\uDF4E';
+  if (p === 'linux') return '\uD83D\uDC27';
+  return '\uD83D\uDCE6';
+}
+
+function relativeDate(d) {
+  const diff = (Date.now() - new Date(d).getTime()) / 1000;
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+const OS_COLORS = { windows: '#89b4fa', macos: '#a6e3a1', linux: '#f9e2af' };
+
+function renderChart(releases) {
+  const canvas = document.getElementById('chart');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+
+  // Build data: one bar per version, stacked by OS (new installs only, no .nupkg updates)
+  const sorted = [...releases].filter(r => r.assets.length > 0).reverse(); // oldest first
+  const data = sorted.map(r => {
+    const byOS = { windows: 0, macos: 0, linux: 0 };
+    for (const a of r.assets) {
+      if (IS_META(a.name) || IS_UPDATE(a.name)) continue;
+      const p = platformOf(a.name);
+      if (p in byOS) byOS[p] += a.download_count;
+    }
+    return { tag: r.tag_name, date: new Date(r.published_at), ...byOS, total: byOS.windows + byOS.macos + byOS.linux };
+  });
+
+  if (data.length === 0) return;
+
+  const maxVal = Math.max(...data.map(d => d.total), 1);
+  const pad = { top: 20, right: 16, bottom: 56, left: 48 };
+  const chartW = W - pad.left - pad.right;
+  const chartH = H - pad.top - pad.bottom;
+  const gap = chartW / data.length;
+  const barW = Math.min(36, gap * 0.7);
+
+  // Grid lines
+  ctx.strokeStyle = '#45475a';
+  ctx.lineWidth = 0.5;
+  const gridLines = 4;
+  ctx.font = '11px system-ui';
+  ctx.fillStyle = '#a6adc8';
+  ctx.textAlign = 'right';
+  for (let i = 0; i <= gridLines; i++) {
+    const y = pad.top + chartH - (chartH * i / gridLines);
+    const val = Math.round(maxVal * i / gridLines);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+    ctx.fillText(val, pad.left - 6, y + 4);
+  }
+
+  // Y-axis label
+  ctx.save();
+  ctx.translate(12, pad.top + chartH / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#a6adc8';
+  ctx.font = '11px system-ui';
+  ctx.fillText('downloads', 0, 0);
+  ctx.restore();
+
+  // Stacked bars — one per version, segments for Windows/macOS/Linux
+  const osKeys = ['windows', 'macos', 'linux'];
+  for (let i = 0; i < data.length; i++) {
+    const d = data[i];
+    const x = pad.left + gap * i + (gap - barW) / 2;
+    let yOffset = 0;
+    for (const os of osKeys) {
+      const val = d[os];
+      if (val === 0) continue;
+      const barH = (val / maxVal) * chartH;
+      const y = pad.top + chartH - yOffset - barH;
+      ctx.fillStyle = OS_COLORS[os];
+      ctx.beginPath();
+      // Round top corners only on the topmost segment
+      if (yOffset + barH >= d.total / maxVal * chartH - 1) {
+        ctx.roundRect(x, y, barW, barH, [3, 3, 0, 0]);
+      } else {
+        ctx.rect(x, y, barW, barH);
+      }
+      ctx.fill();
+      yOffset += barH;
+    }
+
+    // Total on top
+    if (d.total > 0) {
+      ctx.fillStyle = '#cdd6f4';
+      ctx.font = '10px system-ui';
+      ctx.textAlign = 'center';
+      const topY = pad.top + chartH - (d.total / maxVal) * chartH;
+      ctx.fillText(d.total, x + barW / 2, topY - 4);
+    }
+
+    // X-axis: version + date
+    const dateStr = d.date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    ctx.font = '10px system-ui';
+    ctx.textAlign = 'center';
+    ctx.save();
+    ctx.translate(x + barW / 2, pad.top + chartH + 12);
+    ctx.rotate(-0.4);
+    ctx.fillStyle = '#a6adc8';
+    ctx.fillText(d.tag, 0, 0);
+    ctx.restore();
+    ctx.save();
+    ctx.translate(x + barW / 2, pad.top + chartH + 26);
+    ctx.rotate(-0.4);
+    ctx.fillStyle = '#585b70';
+    ctx.font = '9px system-ui';
+    ctx.fillText(dateStr, 0, 0);
+    ctx.restore();
+  }
+
+  // Legend
+  const legendY = pad.top + chartH + 42;
+  ctx.font = '11px system-ui';
+  let legendX = pad.left;
+  for (const [os, color] of Object.entries(OS_COLORS)) {
+    ctx.fillStyle = color;
+    ctx.fillRect(legendX, legendY, 12, 12);
+    ctx.fillStyle = '#a6adc8';
+    ctx.textAlign = 'left';
+    const label = os === 'macos' ? 'macOS' : os.charAt(0).toUpperCase() + os.slice(1);
+    ctx.fillText(label, legendX + 16, legendY + 10);
+    legendX += ctx.measureText(label).width + 32;
+  }
+}
+
+let allData = [];
+let activeFilter = 'all';
+
+let timelineMode = 'cumulative';
+let timelineStack = 'release'; // 'release' or 'platform'
+let timelineHistory = null;
+
+async function loadTimeline() {
+  try {
+    const resp = await fetch('download-history.json', { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (!data.snapshots || data.snapshots.length === 0) {
+      document.getElementById('timelineNote').textContent = 'No snapshots yet. The scheduled GitHub Action will start collecting data.';
+      return;
+    }
+    timelineHistory = data.snapshots;
+    renderTimeline();
+  } catch (err) {
+    document.getElementById('timelineNote').textContent = 'Could not load history: ' + err.message;
+  }
+}
+
+function renderTimeline() {
+  if (!timelineHistory) return;
+  const canvas = document.getElementById('timelineChart');
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+  ctx.clearRect(0, 0, W, H);
+
+  // Sum INSTALL downloads per snapshot per stacking-key. Excludes:
+  //  - RELEASES / RELEASES-x64 / RELEASES-arm64 metadata files
+  //  - .nupkg files (Squirrel auto-update fetches, not new installs)
+  // The stacking key is either the release tag or the platform, per the user toggle.
+  const series = new Map(); // key (tag or platform) -> [{t, count}]
+  for (const snap of timelineHistory) {
+    const t = new Date(snap.t).getTime();
+    // Aggregate per key within this snapshot first
+    const perKey = new Map();
+    for (const [tag, assets] of Object.entries(snap.releases)) {
+      for (const [name, n] of Object.entries(assets)) {
+        if (IS_META(name)) continue;
+        if (IS_UPDATE(name)) continue;
+        const key = timelineStack === 'platform' ? platformOf(name) : tag;
+        perKey.set(key, (perKey.get(key) || 0) + n);
+      }
+    }
+    for (const [key, count] of perKey) {
+      if (!series.has(key)) series.set(key, []);
+      series.get(key).push({ t, count });
+    }
+  }
+
+  // If delta mode, convert cumulative to per-snapshot delta (new downloads per
+  // interval). Skip the first snapshot since there's no "previous" to subtract
+  // from — treating it as 0 would include every historical download in the
+  // first bar.
+  if (timelineMode === 'delta') {
+    for (const [tag, points] of series) {
+      const deltas = [];
+      for (let i = 1; i < points.length; i++) {
+        const prev = points[i - 1].count;
+        deltas.push({ t: points[i].t, count: Math.max(0, points[i].count - prev) });
+      }
+      series.set(tag, deltas);
+    }
+  }
+
+  // When stacking by platform there are only 3-4 buckets so no top-N slicing
+  // is needed. When stacking by release, cap at 5 for legend readability.
+  const ranked = Array.from(series.entries())
+    .sort(([, a], [, b]) => (b[b.length - 1].count) - (a[a.length - 1].count))
+    .slice(0, timelineStack === 'platform' ? 10 : 5);
+
+  const pad = { top: 20, right: 16, bottom: 80, left: 40 };
+  const cw = W - pad.left - pad.right;
+  const ch = H - pad.top - pad.bottom;
+
+  // Collect the sorted list of all snapshot timestamps
+  const tsSet = new Set();
+  for (const [, points] of ranked) for (const p of points) tsSet.add(p.t);
+  const allTs = Array.from(tsSet).sort((a, b) => a - b);
+  if (allTs.length === 0) {
+    document.getElementById('timelineNote').textContent = 'No data points.';
+    return;
+  }
+
+  // For each timestamp, sum the contributions of the top-5 tags (stacked total)
+  const stackTotals = allTs.map((t) => {
+    let tot = 0;
+    for (const [, points] of ranked) {
+      const p = points.find((pp) => pp.t === t);
+      if (p) tot += p.count;
+    }
+    return tot;
+  });
+  const maxVal = Math.max(1, ...stackTotals);
+
+  // Bar geometry
+  const n = allTs.length;
+  const slot = cw / Math.max(n, 1);
+  const barW = Math.min(Math.max(slot * 0.7, 4), 50);
+
+  // Gridlines
+  ctx.strokeStyle = '#45475a'; ctx.lineWidth = 1; ctx.font = '10px system-ui'; ctx.fillStyle = '#a6adc8';
+  const gridLines = 4;
+  for (let i = 0; i <= gridLines; i++) {
+    const y = pad.top + (ch * i / gridLines);
+    ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.globalAlpha = 0.3; ctx.stroke(); ctx.globalAlpha = 1;
+    const v = Math.round(maxVal * (1 - i / gridLines));
+    ctx.textAlign = 'right'; ctx.fillText(String(v), pad.left - 6, y + 3);
+  }
+
+  // Use platform-aligned colors when stacking by platform; otherwise palette
+  const platformColor = { windows: '#89b4fa', macos: '#a6e3a1', linux: '#f9e2af', other: '#cba6f7' };
+  const palette = timelineStack === 'platform'
+    ? ranked.map(([k]) => platformColor[k] || '#a6adc8')
+    : ['#89b4fa', '#a6e3a1', '#f9e2af', '#f38ba8', '#cba6f7'];
+
+  // Draw stacked columns, one per timestamp
+  allTs.forEach((t, i) => {
+    const x = pad.left + slot * (i + 0.5) - barW / 2;
+    let yOffset = 0; // cumulative pixels from bottom
+    let total = 0;
+    ranked.forEach(([tag, points], idx) => {
+      const p = points.find((pp) => pp.t === t);
+      if (!p || p.count === 0) return;
+      const h = (p.count / maxVal) * ch;
+      const y = pad.top + ch - yOffset - h;
+      ctx.fillStyle = palette[idx % palette.length];
+      ctx.fillRect(x, y, barW, h);
+      yOffset += h;
+      total += p.count;
+    });
+    // Total label above the column
+    if (total > 0) {
+      ctx.fillStyle = '#cdd6f4';
+      ctx.textAlign = 'center';
+      ctx.font = '10px system-ui';
+      ctx.fillText(String(total), x + barW / 2, pad.top + ch - yOffset - 4);
+    }
+  });
+
+  // X-axis labels
+  const spanMs = (allTs[allTs.length - 1] - allTs[0]) || 0;
+  const fmtDate = (ts) => {
+    const d = new Date(ts);
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    if (spanMs < 24 * 3600 * 1000) return `${mm}/${dd} ${hh}:${min}`;
+    return `${mm}/${dd} ${hh}:00`;
+  };
+  ctx.fillStyle = '#a6adc8'; ctx.font = '10px system-ui';
+  // Rotate labels -45deg so every bar gets a timestamp without overlap.
+  // If there are more than 25 bars, fall back to every-Nth to keep the axis readable.
+  const rotateLabels = n <= 25;
+  if (rotateLabels) {
+    allTs.forEach((t, i) => {
+      const x = pad.left + slot * (i + 0.5);
+      ctx.save();
+      ctx.translate(x, pad.top + ch + 6);
+      ctx.rotate(-Math.PI / 4);
+      ctx.textAlign = 'right';
+      ctx.fillText(fmtDate(t), 0, 0);
+      ctx.restore();
+    });
+  } else {
+    const labelStride = Math.max(1, Math.ceil(n / 10));
+    ctx.textAlign = 'center';
+    allTs.forEach((t, i) => {
+      if (i % labelStride !== 0 && i !== n - 1) return;
+      const x = pad.left + slot * (i + 0.5);
+      ctx.fillText(fmtDate(t), x, pad.top + ch + 14);
+    });
+  }
+
+  // Legend - place below the labels (rotated labels extend ~45px diagonally)
+  let lx = pad.left;
+  const ly = pad.top + ch + (rotateLabels ? 70 : 34);
+  ranked.forEach(([tag], idx) => {
+    ctx.fillStyle = palette[idx % palette.length];
+    ctx.fillRect(lx, ly - 8, 10, 10);
+    ctx.fillStyle = '#cdd6f4';
+    ctx.textAlign = 'left';
+    ctx.fillText(tag, lx + 14, ly);
+    lx += ctx.measureText(tag).width + 30;
+  });
+
+  const modeLabel = timelineMode === 'cumulative' ? 'showing cumulative downloads' : 'showing new downloads per interval';
+  const hintIfSingle = timelineHistory.length === 1 ? ' - need 2+ snapshots to draw lines; next scheduled run fills this in.' : '';
+  let spanLabel = '';
+  if (timelineHistory.length >= 2) {
+    const first = new Date(timelineHistory[0].t);
+    const last = new Date(timelineHistory[timelineHistory.length - 1].t);
+    const minutes = Math.round((last - first) / 60000);
+    if (minutes < 60) spanLabel = ` Span: ${minutes} min.`;
+    else if (minutes < 60 * 24) spanLabel = ` Span: ${Math.round(minutes / 60 * 10) / 10} hr.`;
+    else spanLabel = ` Span: ${Math.round(minutes / (60 * 24) * 10) / 10} days.`;
+  }
+  document.getElementById('timelineNote').textContent = `${timelineHistory.length} snapshot(s), ${modeLabel}. Top 5 releases.${spanLabel}${hintIfSingle}`;
+}
+
+document.getElementById('timelineMode-cumulative').addEventListener('click', () => {
+  timelineMode = 'cumulative';
+  document.getElementById('timelineMode-cumulative').classList.add('active');
+  document.getElementById('timelineMode-delta').classList.remove('active');
+  renderTimeline();
+});
+document.getElementById('timelineMode-delta').addEventListener('click', () => {
+  timelineMode = 'delta';
+  document.getElementById('timelineMode-delta').classList.add('active');
+  document.getElementById('timelineMode-cumulative').classList.remove('active');
+  renderTimeline();
+});
+document.getElementById('timelineStack-release').addEventListener('click', () => {
+  timelineStack = 'release';
+  document.getElementById('timelineStack-release').classList.add('active');
+  document.getElementById('timelineStack-platform').classList.remove('active');
+  renderTimeline();
+});
+document.getElementById('timelineStack-platform').addEventListener('click', () => {
+  timelineStack = 'platform';
+  document.getElementById('timelineStack-platform').classList.add('active');
+  document.getElementById('timelineStack-release').classList.remove('active');
+  renderTimeline();
+});
+
+loadTimeline();
+
+async function load() {
+  const resp = await fetch(`https://api.github.com/repos/${REPO}/releases?per_page=30`);
+  const releases = await resp.json();
+  allData = releases;
+
+  let totalUsers = 0, totalUpdates = 0;
+  for (const r of releases) {
+    for (const a of r.assets) {
+      if (IS_META(a.name)) continue;
+      if (IS_UPDATE(a.name)) totalUpdates += a.download_count;
+      else totalUsers += a.download_count;
+    }
+  }
+
+  document.getElementById('total').textContent = totalUsers.toLocaleString();
+  document.getElementById('updates').textContent = totalUpdates.toLocaleString();
+  document.getElementById('releases').textContent = releases.length;
+
+  renderChart(releases);
+  render();
+}
+
+function render() {
+  const container = document.getElementById('content');
+  container.innerHTML = '';
+
+  for (let i = 0; i < allData.length; i++) {
+    const r = allData[i];
+    const assets = r.assets
+      .filter(a => !IS_META(a.name))
+      .filter(a => activeFilter === 'all' || platformOf(a.name) === activeFilter)
+      .sort((a, b) => b.download_count - a.download_count);
+
+    const total = assets.reduce((s, a) => s + a.download_count, 0);
+
+    const div = document.createElement('div');
+    div.className = 'release';
+    div.innerHTML = `
+      <div class="release-header" onclick="this.nextElementSibling.classList.toggle('hidden')">
+        <span>
+          <span class="release-tag">${r.tag_name}${i === 0 ? '<span class="latest">Latest</span>' : ''}</span>
+          <span class="release-date" style="margin-left:12px">${relativeDate(r.published_at)}</span>
+        </span>
+        <span class="release-total">${total.toLocaleString()} downloads</span>
+      </div>
+      <div class="release-body${i > 0 ? ' hidden' : ''}">
+        <table>
+          <thead><tr><th>Asset</th><th>Downloads</th></tr></thead>
+          <tbody>
+            ${assets.map(a => `<tr>
+              <td><span class="platform-icon">${platformIcon(platformOf(a.name))}</span>${a.name}</td>
+              <td class="${a.download_count === 0 ? 'zero' : ''}">${a.download_count.toLocaleString()}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    container.appendChild(div);
+  }
+}
+
+document.querySelectorAll('.filter-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    activeFilter = btn.dataset.filter;
+    render();
+  });
+});
+
+load();
+</script>
+</body>
+</html>

@@ -39,6 +39,7 @@ interface CacheEntry {
   firstPrompt: string;
   lastLineType: string;
   lastLineHasEndTurn: boolean;
+  awaitingInput: boolean; // true after end_turn, cleared on next user message
 }
 
 const cache = new Map<string, CacheEntry>();
@@ -88,6 +89,7 @@ export function parseClaudeCodeSession(filePath: string): ClaudeCodeParsedSessio
           firstPrompt: '',
           lastLineType: '',
           lastLineHasEndTurn: false,
+          awaitingInput: false,
         };
 
     for (const line of lines) {
@@ -126,6 +128,7 @@ function processLine(line: string, state: CacheEntry): void {
 
   state.lastLineType = type;
   state.lastLineHasEndTurn = false;
+  if (type === 'user') state.awaitingInput = false;
 
   // Extract timestamp
   const tsMatch = line.match(/"timestamp"\s*:\s*"([^"]+)"/);
@@ -196,8 +199,6 @@ function processLine(line: string, state: CacheEntry): void {
       break;
     }
     case 'assistant': {
-      state.messageCount++;
-
       // Extract model
       const modelMatch = line.match(/"model"\s*:\s*"([^"]+)"/);
       if (modelMatch) state.model = modelMatch[1];
@@ -209,6 +210,7 @@ function processLine(line: string, state: CacheEntry): void {
       // Check for end_turn
       if (line.includes('"end_turn"')) {
         state.lastLineHasEndTurn = true;
+        state.awaitingInput = true;
       }
       break;
     }
@@ -223,26 +225,32 @@ function deriveResult(
   mtimeMs: number,
 ): ClaudeCodeParsedSession {
   const isRecent = Date.now() - mtimeMs < ACTIVE_THRESHOLD_MS;
+  const isRecentWaiting = Date.now() - mtimeMs < 10 * 60_000; // 10 min for waiting states
 
   let status: CopilotSessionStatus = 'idle';
 
-  if (isRecent) {
-    switch (state.lastLineType) {
-      case 'progress':
-        status = 'executingTool';
-        break;
-      case 'user':
-        status = 'thinking';
-        break;
-      case 'assistant':
-        status = state.lastLineHasEndTurn ? 'waitingForUser' : 'thinking';
-        break;
-      case 'system':
-        status = 'waitingForUser';
-        break;
-      default:
-        status = 'thinking';
-        break;
+  if (isRecent || isRecentWaiting) {
+    if (state.awaitingInput && isRecentWaiting) {
+      // Assistant finished (end_turn) and no new user message — waiting for input
+      status = 'waitingForUser';
+    } else if (isRecent) {
+      switch (state.lastLineType) {
+        case 'progress':
+          status = state.awaitingInput ? 'waitingForUser' : 'executingTool';
+          break;
+        case 'user':
+          status = 'thinking';
+          break;
+        case 'assistant':
+          status = state.lastLineHasEndTurn ? 'waitingForUser' : 'thinking';
+          break;
+        case 'system':
+          status = 'waitingForUser';
+          break;
+        default:
+          status = 'thinking';
+          break;
+      }
     }
   }
 

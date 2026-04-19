@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useTerminalStore } from '../state/terminal-store';
+import { formatKeyForPlatform } from '../utils/platform';
 import InputDialog from './InputDialog';
 
 interface Command {
@@ -26,6 +27,7 @@ const CommandPalette: React.FC = () => {
       { id: 'closeTerminal', label: 'Close Terminal', shortcut: 'Ctrl+Shift+W', action: () => { const id = focusedId(); if (id) store().closeTerminal(id); } },
       { id: 'renameTerminal', label: 'Rename Terminal', shortcut: 'Ctrl+Shift+R', action: () => { const id = focusedId(); if (id) store().startRenaming(id); } },
       { id: 'jumpToTerminal', label: 'Jump to Terminal', shortcut: 'Ctrl+Shift+G', action: () => store().toggleSwitcher() },
+      { id: 'paneHints', label: 'Jump to Terminal by Hint', shortcut: 'Ctrl+Shift+J', action: () => store().togglePaneHints() },
       { id: 'tabMenu', label: 'Open Tab Menu', shortcut: 'Ctrl+Shift+M', action: () => store().openTabMenu() },
       { id: 'focusNext', label: 'Focus Next Terminal', shortcut: 'Ctrl+Tab', action: () => store().focusNext() },
       { id: 'focusPrev', label: 'Focus Previous Terminal', shortcut: 'Ctrl+Shift+Tab', action: () => store().focusPrev() },
@@ -60,12 +62,36 @@ const CommandPalette: React.FC = () => {
         }});
       }},
       { id: 'copilotSessions', label: 'Copilot Sessions Panel', shortcut: 'Ctrl+Shift+C', action: () => store().toggleCopilotPanel() },
+      { id: 'worktreePanel', label: 'Git Worktree Panel', shortcut: 'Ctrl+Shift+T', action: () => store().toggleWorktreePanel() },
       { id: 'dirPicker', label: 'Go to Directory (Favorites & Recent)', shortcut: 'Ctrl+Shift+D', action: () => store().toggleDirPicker() },
+      { id: 'colorizeAllTabs', label: 'Toggle Tab Colors', shortcut: 'Ctrl+Shift+O', action: () => store().colorizeAllTabs() },
       { id: 'toggleTabBar', label: 'Toggle Tab Bar: Top / Left', action: () => store().toggleTabBarPosition() },
-      { id: 'shortcuts', label: 'Show Keyboard Shortcuts', shortcut: 'Ctrl+Shift+/', action: () => store().toggleShortcuts() },
+      { id: 'hideTabBar', label: 'Hide / Show Tab Bar', shortcut: 'Ctrl+Shift+B', action: () => store().toggleHideTabTitles() },
+      { id: 'fileExplorer', label: 'File Explorer', shortcut: 'Ctrl+Shift+X', action: () => store().toggleFileExplorer() },
+      { id: 'refocus', label: 'Re-focus Terminal (fix stuck input)', action: () => {
+        const id = focusedId();
+        if (id) {
+          window.terminalAPI.resizePty(id, 80, 24).catch(() => {});
+          window.terminalAPI.writePty(id, '\x1b[I\x1b[?1h\x1b[?1l');
+          store().setFocus(id);
+        }
+      }},
+      { id: 'jumpToPrompt', label: 'Jump to Prompt', shortcut: 'Ctrl+Shift+K', action: () => { const id = focusedId(); if (id) store().showPromptsForTerminal(id); } },
+      { id: 'shortcuts', label: 'Show Keyboard Shortcuts', shortcut: 'Ctrl+Shift+?', action: () => store().toggleShortcuts() },
       { id: 'settings', label: 'Open Settings', shortcut: 'Ctrl+,', action: () => store().toggleSettings() },
       { id: 'checkForUpdates', label: 'Check for Updates', action: () => {
         window.terminalAPI.checkForUpdates();
+      }},
+      { id: 'openDiagLog', label: 'Open Diagnostics Log', action: () => {
+        window.terminalAPI.getDiagLogPath().then((p: string) => (window.terminalAPI as any).openPath(p));
+      }},
+      { id: 'reportIssue', label: 'Report Issue', action: () => {
+        const version = document.querySelector('.status-dim')?.textContent?.replace('v', '') || 'unknown';
+        const platform = navigator.platform;
+        const issueBody = `**Version:** ${version}\n**Platform:** ${platform}\n\n**Description:**\n\n\n**Steps to reproduce:**\n1. \n\n**Expected behavior:**\n\n**Actual behavior:**\n`;
+        window.terminalAPI.clipboardWrite(issueBody);
+        window.open(`https://github.com/InbarR/tmax/issues/new?body=${encodeURIComponent(issueBody)}`, '_blank');
+        store().addToast('Issue template copied to clipboard. If GitHub blocks you (EMU account), open in a private/incognito window.');
       }},
       { id: 'editConfig', label: 'Open Settings JSON File', action: () => {
         // Open the config JSON in the default editor
@@ -206,7 +232,7 @@ const CommandPalette: React.FC = () => {
               onMouseEnter={() => setSelectedIndex(index)}
             >
               <span className="palette-label">{cmd.label}</span>
-              {cmd.shortcut && <kbd className="palette-shortcut">{cmd.shortcut}</kbd>}
+              {cmd.shortcut && <kbd className="palette-shortcut">{formatKeyForPlatform(cmd.shortcut)}</kbd>}
             </div>
           ))}
           {filtered.length === 0 && (
