@@ -3428,6 +3428,57 @@ select.settings-input {
   font-weight: 500;
 }
 
+/* ── Filter Dropdown Sections ────────────────────────────────────── */
+.ai-filter-section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+  padding: 6px 10px 2px;
+  opacity: 0.7;
+}
+.ai-filter-separator {
+  height: 1px;
+  background: var(--border-color);
+  margin: 4px 0;
+}
+
+/* ── Session Group Headers ───────────────────────────────────────── */
+.ai-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  cursor: pointer;
+  user-select: none;
+  border-bottom: 1px solid var(--border-color);
+}
+.ai-group-header:hover {
+  color: var(--text-primary);
+}
+.ai-group-header.has-active {
+  color: var(--focus-border);
+}
+.ai-group-chevron {
+  font-size: 8px;
+  width: 10px;
+  text-align: center;
+}
+.ai-group-label {
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-group-count {
+  font-weight: 400;
+  opacity: 0.7;
+}
+
 /* ── Session Lifecycle Buttons (Complete / Reactivate) ──────────────── */
 .ai-session-item {
   position: relative;

@@ -2,6 +2,8 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import ReactDOM from 'react-dom';
 import { useTerminalStore } from '../state/terminal-store';
 import { getTerminalEntry } from '../terminal-registry';
+import { useFilteredSessions, type GroupByOption } from '../hooks/useFilteredSessions';
+import { SessionGroupHeader } from './SessionGroupHeader';
 import type { CopilotSessionSummary, CopilotSessionStatus, SessionProvider, SessionLifecycle } from '../../shared/copilot-types';
 
 const MIN_WIDTH = 180;
@@ -59,18 +61,10 @@ function getSubtitle(s: CopilotSessionSummary): string | null {
   return null;
 }
 
-function sortSessions(
-  sessions: CopilotSessionSummary[],
-  openSessionIds: Set<string>,
-): CopilotSessionSummary[] {
-  return [...sessions].sort((a, b) => {
-    // Open-in-tmax sessions first, then by last activity time (newest first)
-    const aOpen = openSessionIds.has(a.id) ? 1 : 0;
-    const bOpen = openSessionIds.has(b.id) ? 1 : 0;
-    if (aOpen !== bOpen) return bOpen - aOpen;
-    return (b.lastActivityTime || 0) - (a.lastActivityTime || 0);
-  });
-}
+const GROUP_BY_OPTIONS: { value: GroupByOption; label: string }[] = [
+  { value: 'none', label: 'None' },
+  { value: 'repository', label: 'Repository' },
+];
 
 const PROVIDER_LABEL: Record<SessionProvider, string> = {
   copilot: 'Copilot',
@@ -123,6 +117,10 @@ const CopilotPanel: React.FC = () => {
   const [renaming, setRenaming] = useState<{ id: string; provider: SessionProvider; value: string } | null>(null);
   const [promptsDialog, setPromptsDialog] = useState<{ title: string; prompts: string[]; terminalId: string | null } | null>(null);
   const [showRunningOnly, setShowRunningOnly] = useState(false);
+  const [groupBy, setGroupBy] = useState<GroupByOption>(
+    () => (localStorage.getItem('tmax-session-groupBy') as GroupByOption) || 'none',
+  );
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const ctxRef = useRef<HTMLDivElement>(null);
@@ -163,38 +161,23 @@ const CopilotPanel: React.FC = () => {
     return 'active';
   }, [lifecycleOverrides, oldSessionDays]);
 
-  // Merge, deduplicate, and filter sessions
+  // Merge, deduplicate, filter, and optionally group sessions
+  const result = useFilteredSessions(copilotSessions, claudeCodeSessions, {
+    filterTab, lifecycleTab, showRunningOnly, groupBy,
+    summaryOverrides, getSessionLifecycle, openSessionIds,
+  });
+
+  // Flat list of all visible sessions (for keyboard nav and selectedIndex)
   const filtered = useMemo(() => {
-    let all = [
-      ...copilotSessions.filter((s) => s.messageCount > 0).map((s) => ({ ...s, provider: s.provider || 'copilot' as const })),
-      ...claudeCodeSessions.filter((s) => s.messageCount > 0).map((s) => ({ ...s, provider: s.provider || 'claude-code' as const })),
-    ].map((s) => summaryOverrides[s.id] ? { ...s, summary: summaryOverrides[s.id] } : s);
-
-    // Filter by provider
-    if (filterTab !== 'all') {
-      all = all.filter((s) => s.provider === filterTab);
-    }
-
-    // Filter to running (non-idle) sessions only
-    if (showRunningOnly) {
-      all = all.filter((s) => s.status !== 'idle');
-    }
-
-    // Deduplicate by session ID
-    const byId = new Map<string, CopilotSessionSummary>();
-    for (const s of all) {
-      const existing = byId.get(s.id);
-      if (!existing || (s.lastActivityTime || 0) > (existing.lastActivityTime || 0)) {
-        byId.set(s.id, s);
+    if (result.kind === 'flat') return result.sessions;
+    const all: CopilotSessionSummary[] = [];
+    for (const g of result.groups) {
+      if (!collapsedGroups.has(g.key)) {
+        all.push(...g.sessions);
       }
     }
-
-    // Filter by lifecycle tab
-    const deduped = Array.from(byId.values());
-    const lifecycleFiltered = deduped.filter((s) => getSessionLifecycle(s) === lifecycleTab);
-
-    return sortSessions(lifecycleFiltered, openSessionIds);
-  }, [copilotSessions, claudeCodeSessions, query, filterTab, showRunningOnly, summaryOverrides, lifecycleTab, getSessionLifecycle, openSessionIds]);
+    return all;
+  }, [result, collapsedGroups]);
 
   // Lifecycle counts (for tab badges) — computed from all sessions regardless of provider/running filter
   const lifecycleCounts = useMemo(() => {
@@ -355,6 +338,21 @@ const CopilotPanel: React.FC = () => {
     store.loadClaudeCodeSessions();
   }, []);
 
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const handleSetGroupBy = useCallback((value: GroupByOption) => {
+    setGroupBy(value);
+    setCollapsedGroups(new Set());
+    localStorage.setItem('tmax-session-groupBy', value);
+  }, []);
+
   const handleResizeStart = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
@@ -475,6 +473,128 @@ const CopilotPanel: React.FC = () => {
 
   if (!show) return promptsPortal || null;
 
+  const renderSessionItem = (session: CopilotSessionSummary, index: number) => {
+    const title = getTitle(session);
+    const subtitle = getSubtitle(session);
+    const active = isActiveStatus(session.status);
+    const isOpen = openSessionIds.has(session.id);
+    const time = relativeTime(session.lastActivityTime);
+    const hasStats = session.messageCount > 0 || session.toolCallCount > 0;
+    const paneColor = sessionColors.get(session.id);
+    const itemStyle = paneColor ? { borderLeft: `3px solid ${paneColor}` } : undefined;
+
+    return (
+      <div
+        key={`${session.provider}-${session.id}`}
+        style={itemStyle}
+        className={`ai-session-item${index === selectedIndex ? ' selected' : ''}${selectedSessionIds.has(session.id) ? ' multi-selected' : ''}${active ? ' active' : ''}`}
+        onClick={(e) => {
+          setSelectedIndex(index);
+          if (e.ctrlKey || e.metaKey) {
+            setSelectedSessionIds((prev) => {
+              const next = new Set(prev);
+              if (next.has(session.id)) next.delete(session.id); else next.add(session.id);
+              return next;
+            });
+          } else {
+            setSelectedSessionIds(new Set([session.id]));
+          }
+        }}
+        onDoubleClick={() => openSession(session)}
+        onMouseEnter={() => setSelectedIndex(index)}
+        onContextMenu={(e) => handleContextMenu(e, session)}
+        title={session.cwd || session.id}
+      >
+        <span
+          className={`ai-status-dot${active ? ' pulsing' : ''}`}
+          style={{ background: STATUS_COLORS[session.status] }}
+          title={STATUS_LABELS[session.status]}
+        />
+        <div className="ai-session-info">
+          <div className="ai-session-title-row">
+            {renaming && renaming.id === session.id ? (
+              <input
+                ref={renameRef}
+                className="ai-session-rename-input"
+                value={renaming.value}
+                onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === 'Enter') handleFinishRename();
+                  if (e.key === 'Escape') setRenaming(null);
+                }}
+                onBlur={handleFinishRename}
+                onClick={(e) => e.stopPropagation()}
+              />
+            ) : (
+              <span className="ai-session-name" title={title}>
+                {title}
+              </span>
+            )}
+            {isOpen && <span className="ai-open-badge">OPEN</span>}
+            {session.wsl && (
+              <span className="ai-wsl-badge" title={session.wslDistro || 'WSL'}>
+                {session.wslDistro || 'WSL'}
+              </span>
+            )}
+            {time && <span className="ai-session-time">{time}</span>}
+          </div>
+          {subtitle && (
+            <div className="ai-session-subtitle">{subtitle}</div>
+          )}
+          {session.cwd && (
+            <div className="ai-session-cwd" title={session.cwd}>{session.cwd}</div>
+          )}
+          {active && (
+            <div className="ai-session-status" style={{ color: STATUS_COLORS[session.status] }}>
+              {STATUS_LABELS[session.status]}
+            </div>
+          )}
+          <div className="ai-session-meta">
+            <span className="ai-provider-badge" data-provider={session.provider}>
+              {PROVIDER_LABEL[session.provider] || session.provider}
+            </span>
+            {session.model && (
+              <span className="ai-session-stat">{session.model.replace(/^claude-/, '').replace(/-\d{8}$/, '')}</span>
+            )}
+            {hasStats && (
+              <>
+                <span className="ai-session-stat">{session.messageCount} prompts</span>
+                {session.toolCallCount > 0 && (
+                  <span className="ai-session-stat">{session.toolCallCount} tools</span>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+        {lifecycleTab === 'active' && (
+          <button
+            className="ai-session-lifecycle-btn ai-session-complete-btn"
+            title="Mark as completed"
+            onClick={(e) => {
+              e.stopPropagation();
+              useTerminalStore.getState().setSessionLifecycle(session.id, 'completed');
+            }}
+          >
+            ✓
+          </button>
+        )}
+        {(lifecycleTab === 'completed' || lifecycleTab === 'old') && (
+          <button
+            className="ai-session-lifecycle-btn ai-session-reactivate-btn"
+            title="Move back to Active"
+            onClick={(e) => {
+              e.stopPropagation();
+              useTerminalStore.getState().setSessionLifecycle(session.id, 'active');
+            }}
+          >
+            ↩
+          </button>
+        )}
+      </div>
+    );
+  };
+
   // Counts for filter tabs (deduplicated)
   const copilotCount = copilotSessions.filter((s) => s.messageCount > 0).length;
   const claudeCount = claudeCodeSessions.filter((s) => s.messageCount > 0).length;
@@ -489,12 +609,12 @@ const CopilotPanel: React.FC = () => {
         <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
           <div className="ai-filter-wrapper" ref={filterDropdownRef}>
             <button
-              className={`ai-filter-button${filterTab !== 'all' ? ' has-filter' : ''}`}
+              className={`ai-filter-button${filterTab !== 'all' || groupBy !== 'none' ? ' has-filter' : ''}`}
               onClick={() => setShowFilterDropdown((v) => !v)}
-              data-tooltip="Filter"
+              data-tooltip="Filter &amp; Group"
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><line x1="1" y1="3" x2="15" y2="3"/><line x1="3" y1="8" x2="13" y2="8"/><line x1="5.5" y1="13" x2="10.5" y2="13"/></svg>
-              {filterTab !== 'all' && <span className="ai-filter-badge" />}
+              {(filterTab !== 'all' || groupBy !== 'none') && <span className="ai-filter-badge" />}
             </button>
             {showFilterDropdown && (
               <div className="ai-filter-dropdown">
@@ -520,6 +640,17 @@ const CopilotPanel: React.FC = () => {
                     Claude ({claudeCount})
                   </button>
                 )}
+                <div className="ai-filter-separator" />
+                <div className="ai-filter-section-label">Group by</div>
+                {GROUP_BY_OPTIONS.map(opt => (
+                  <button
+                    key={opt.value}
+                    className={`ai-filter-option${groupBy === opt.value ? ' active' : ''}`}
+                    onClick={() => { handleSetGroupBy(opt.value); setShowFilterDropdown(false); }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
               </div>
             )}
           </div>
@@ -572,130 +703,41 @@ const CopilotPanel: React.FC = () => {
       />
 
       <div className="dir-panel-list" ref={listRef}>
-        {filtered.map((session, index) => {
-          const title = getTitle(session);
-          const subtitle = getSubtitle(session);
-          const active = isActiveStatus(session.status);
-          const isOpen = openSessionIds.has(session.id);
-          const time = relativeTime(session.lastActivityTime);
-          const hasStats = session.messageCount > 0 || session.toolCallCount > 0;
-          const paneColor = sessionColors.get(session.id);
-          // Left accent border mirrors the pane's color so you can match
-          // sessions with their open pane at a glance.
-          const itemStyle = paneColor ? { borderLeft: `3px solid ${paneColor}` } : undefined;
-
-          return (
-            <div
-              key={`${session.provider}-${session.id}`}
-              style={itemStyle}
-              className={`ai-session-item${index === selectedIndex ? ' selected' : ''}${selectedSessionIds.has(session.id) ? ' multi-selected' : ''}${active ? ' active' : ''}`}
-              onClick={(e) => {
-                setSelectedIndex(index);
-                if (e.ctrlKey || e.metaKey) {
-                  setSelectedSessionIds((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(session.id)) next.delete(session.id); else next.add(session.id);
-                    return next;
-                  });
-                } else {
-                  setSelectedSessionIds(new Set([session.id]));
-                }
-              }}
-              onDoubleClick={() => openSession(session)}
-              onMouseEnter={() => setSelectedIndex(index)}
-              onContextMenu={(e) => handleContextMenu(e, session)}
-              title={session.cwd || session.id}
-            >
-              <span
-                className={`ai-status-dot${active ? ' pulsing' : ''}`}
-                style={{ background: STATUS_COLORS[session.status] }}
-                title={STATUS_LABELS[session.status]}
-              />
-              <div className="ai-session-info">
-                <div className="ai-session-title-row">
-                  {renaming && renaming.id === session.id ? (
-                    <input
-                      ref={renameRef}
-                      className="ai-session-rename-input"
-                      value={renaming.value}
-                      onChange={(e) => setRenaming({ ...renaming, value: e.target.value })}
-                      onKeyDown={(e) => {
-                        e.stopPropagation();
-                        if (e.key === 'Enter') handleFinishRename();
-                        if (e.key === 'Escape') setRenaming(null);
-                      }}
-                      onBlur={handleFinishRename}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                  ) : (
-                    <span className="ai-session-name" title={title}>
-                      {title}
-                    </span>
-                  )}
-                  {isOpen && <span className="ai-open-badge">OPEN</span>}
-                  {session.wsl && (
-                    <span className="ai-wsl-badge" title={session.wslDistro || 'WSL'}>
-                      {session.wslDistro || 'WSL'}
-                    </span>
-                  )}
-                  {time && <span className="ai-session-time">{time}</span>}
-                </div>
-                {subtitle && (
-                  <div className="ai-session-subtitle">{subtitle}</div>
-                )}
-                {session.cwd && (
-                  <div className="ai-session-cwd" title={session.cwd}>{session.cwd}</div>
-                )}
-                {active && (
-                  <div className="ai-session-status" style={{ color: STATUS_COLORS[session.status] }}>
-                    {STATUS_LABELS[session.status]}
-                  </div>
-                )}
-                <div className="ai-session-meta">
-                  <span className="ai-provider-badge" data-provider={session.provider}>
-                    {PROVIDER_LABEL[session.provider] || session.provider}
-                  </span>
-                  {session.model && (
-                    <span className="ai-session-stat">{session.model.replace(/^claude-/, '').replace(/-\d{8}$/, '')}</span>
-                  )}
-                  {hasStats && (
-                    <>
-                      <span className="ai-session-stat">{session.messageCount} prompts</span>
-                      {session.toolCallCount > 0 && (
-                        <span className="ai-session-stat">{session.toolCallCount} tools</span>
-                      )}
-                    </>
-                  )}
-                </div>
+        {result.kind === 'grouped' ? (
+          <>
+            {result.groups.map(group => {
+              const isCollapsed = collapsedGroups.has(group.key);
+              return (
+                <React.Fragment key={group.key}>
+                  <SessionGroupHeader
+                    label={group.label}
+                    count={group.sessions.length}
+                    collapsed={isCollapsed}
+                    hasActiveSessions={group.hasActiveSessions}
+                    onToggle={() => toggleGroup(group.key)}
+                  />
+                  {!isCollapsed && group.sessions.map((session) => {
+                    const globalIdx = filtered.indexOf(session);
+                    return renderSessionItem(session, globalIdx);
+                  })}
+                </React.Fragment>
+              );
+            })}
+            {result.totalCount === 0 && (
+              <div className="dir-panel-empty">
+                {lifecycleTab === 'active' && allCount === 0
+                  ? 'No AI sessions found'
+                  : lifecycleTab === 'completed'
+                  ? 'No completed sessions'
+                  : lifecycleTab === 'old'
+                  ? 'No old sessions'
+                  : 'No matching sessions'}
               </div>
-              {/* Complete button (Active tab) or Reactivate button (Completed/Old tabs) */}
-              {lifecycleTab === 'active' && (
-                <button
-                  className="ai-session-lifecycle-btn ai-session-complete-btn"
-                  title="Mark as completed"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    useTerminalStore.getState().setSessionLifecycle(session.id, 'completed');
-                  }}
-                >
-                  ✓
-                </button>
-              )}
-              {(lifecycleTab === 'completed' || lifecycleTab === 'old') && (
-                <button
-                  className="ai-session-lifecycle-btn ai-session-reactivate-btn"
-                  title="Move back to Active"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    useTerminalStore.getState().setSessionLifecycle(session.id, 'active');
-                  }}
-                >
-                  ↩
-                </button>
-              )}
-            </div>
-          );
-        })}
+            )}
+          </>
+        ) : (
+          <>
+        {filtered.map((session, index) => renderSessionItem(session, index))}
         {filtered.length === 0 && (
           <div className="dir-panel-empty">
             {lifecycleTab === 'active' && allCount === 0
@@ -706,6 +748,8 @@ const CopilotPanel: React.FC = () => {
               ? 'No old sessions'
               : 'No matching sessions'}
           </div>
+        )}
+          </>
         )}
       </div>
 
